@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://www.deezer.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Adds a button next to the bell that pushes unread (pink-dot) new-release notifications' tracks into a chosen playlist (defaults to the first one in the sidebar; override via Tampermonkey menu).
 // @match        https://www.deezer.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=deezer.com
@@ -18,7 +18,7 @@
 	const CONFIG = {
 		playlistId: null, // null = first sidebar playlist
 		releaseTypeRegex: /NEW (SINGLE|ALBUM|EP|MIXTAPE|RELEASE)/i,
-		bellOpenDelay: 600,
+		bellOpenTimeoutMs: 2000,
 	};
 
 	const gmGet = typeof GM_getValue === "function" ? GM_getValue : () => undefined;
@@ -36,6 +36,10 @@
 			gmSet("playlistId", v.trim() === "" ? "" : Number(v.trim()));
 		});
 		GM_registerMenuCommand("Reset to first playlist", () => gmSet("playlistId", ""));
+		GM_registerMenuCommand("Clear processed albums (allow re-adding)", () => {
+			gmSet("processedKeys", "");
+			toast("Processed album history cleared");
+		});
 	}
 
 	const GW = "/ajax/gw-light.php";
@@ -49,6 +53,7 @@
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body || {}),
 		});
+		if (!res.ok) throw new Error(`GW ${method} HTTP ${res.status}`);
 		return res.json();
 	}
 	async function getApiToken() {
@@ -56,9 +61,19 @@
 		return data?.results?.checkForm;
 	}
 	async function getAlbumTracks(albumId) {
-		const r = await fetch(`https://api.deezer.com/album/${albumId}`);
-		const j = await r.json();
-		return (j?.tracks?.data || []).map((t) => String(t.id));
+		const ids = [];
+		let url = `https://api.deezer.com/album/${albumId}`;
+		let firstPage = true;
+		while (url) {
+			const r = await fetch(url);
+			if (!r.ok) throw new Error(`album ${albumId} HTTP ${r.status}`);
+			const j = await r.json();
+			const page = firstPage ? j?.tracks : j;
+			firstPage = false;
+			(page?.data || []).forEach((t) => ids.push(String(t.id)));
+			url = page?.next || null;
+		}
+		return ids;
 	}
 	async function addSongsToPlaylist(playlistId, trackIds, apiToken) {
 		return gwCall(
@@ -83,13 +98,19 @@
 	}
 
 	const getBell = () => document.querySelector('button[aria-label="Notifications"]');
-	function openBell() {
-		return new Promise((resolve) => {
-			const bell = getBell();
-			if (!bell) return resolve(null);
-			if (bell.getAttribute("aria-expanded") !== "true") bell.click();
-			setTimeout(() => resolve(document.getElementById(bell.getAttribute("aria-controls"))), cfg("bellOpenDelay"));
-		});
+	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+	async function openBell() {
+		const bell = getBell();
+		if (!bell) return null;
+		if (bell.getAttribute("aria-expanded") !== "true") bell.click();
+		const controlsId = bell.getAttribute("aria-controls");
+		const deadline = Date.now() + cfg("bellOpenTimeoutMs");
+		while (Date.now() < deadline) {
+			const el = controlsId ? document.getElementById(controlsId) : null;
+			if (el?.querySelector(".notifications-item-container")) return el;
+			await sleep(50);
+		}
+		return controlsId ? document.getElementById(controlsId) : null;
 	}
 	function closeBell() {
 		const bell = getBell();
@@ -163,6 +184,18 @@
 		b.style.cursor = busy ? "wait" : "pointer";
 	};
 
+	function loadProcessed() {
+		const raw = gmGet("processedKeys", "");
+		if (!raw) return new Set();
+		try {
+			return new Set(JSON.parse(raw));
+		} catch {
+			return new Set();
+		}
+	}
+	const saveProcessed = (set) => gmSet("processedKeys", JSON.stringify([...set]));
+	const processedKey = (playlistId, albumId) => `${playlistId}:${albumId}`;
+
 	async function run(btn) {
 		setBtnState(btn, "…working", true);
 		try {
@@ -170,9 +203,14 @@
 			if (!playlist) return toast("No playlist found", true);
 
 			const popover = await openBell();
-			const albums = readNotificationAlbums(popover);
+			const allAlbums = readNotificationAlbums(popover);
 			closeBell();
-			if (!albums.length) return toast("No new release notifications visible");
+			if (!allAlbums.length) return toast("No new release notifications visible");
+
+			const processed = loadProcessed();
+			const albums = allAlbums.filter((a) => !processed.has(processedKey(playlist.id, a.id)));
+			const skipped = allAlbums.length - albums.length;
+			if (!albums.length) return toast(`All ${skipped} album(s) already added to "${playlist.name}"`);
 
 			const apiToken = await getApiToken();
 			if (!apiToken) return toast("Could not fetch Deezer API token", true);
@@ -194,12 +232,14 @@
 					}
 					trackTotal += ids.length;
 					albumOk++;
+					processed.add(processedKey(playlist.id, a.id));
 				} catch {
 					albumFailed++;
 				}
 			}
+			saveProcessed(processed);
 			toast(
-				`Added ${trackTotal} track(s) from ${albumOk}/${albums.length} album(s) to "${playlist.name}"${albumFailed ? ` — ${albumFailed} failed` : ""}`,
+				`Added ${trackTotal} track(s) from ${albumOk}/${albums.length} album(s) to "${playlist.name}"${albumFailed ? ` — ${albumFailed} failed` : ""}${skipped ? ` — ${skipped} skipped (already added)` : ""}`,
 				albumFailed > 0 && albumOk === 0,
 			);
 		} catch (e) {
@@ -246,6 +286,15 @@
 		}
 	}
 
-	new MutationObserver(injectButton).observe(document.body, { childList: true, subtree: true });
+	let injectScheduled = false;
+	function scheduleInject() {
+		if (injectScheduled) return;
+		injectScheduled = true;
+		requestAnimationFrame(() => {
+			injectScheduled = false;
+			injectButton();
+		});
+	}
+	new MutationObserver(scheduleInject).observe(document.body, { childList: true, subtree: true });
 	injectButton();
 })();
