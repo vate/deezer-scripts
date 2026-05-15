@@ -19,6 +19,7 @@
 		playlistId: null, // null = first sidebar playlist
 		releaseTypeRegex: /NEW (SINGLE|ALBUM|EP|MIXTAPE|RELEASE)/i,
 		bellOpenTimeoutMs: 2000,
+		expandTimeoutMs: 5000,
 	};
 
 	const gmGet = typeof GM_getValue === "function" ? GM_getValue : () => undefined;
@@ -116,6 +117,32 @@
 		const bell = getBell();
 		if (bell?.getAttribute("aria-expanded") === "true") bell.click();
 	}
+
+	// Deezer virtualizes the notifications list: items only enter the DOM as
+	// the popover is scrolled. Force-render every notification by scrolling to
+	// the bottom until the rendered count and scrollHeight stop growing.
+	async function expandPopover(popover) {
+		if (!popover) return;
+		const scroller =
+			[popover, ...popover.querySelectorAll("*")].find((el) => {
+				const cs = el && window.getComputedStyle(el);
+				return cs && /(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
+			}) || popover;
+
+		let lastCount = -1;
+		let lastHeight = -1;
+		const deadline = Date.now() + cfg("expandTimeoutMs");
+		while (Date.now() < deadline) {
+			scroller.scrollTop = scroller.scrollHeight;
+			await sleep(150);
+			const count = popover.querySelectorAll(".notifications-item-container").length;
+			const height = scroller.scrollHeight;
+			if (count === lastCount && height === lastHeight) break;
+			lastCount = count;
+			lastHeight = height;
+		}
+		scroller.scrollTop = 0;
+	}
 	// Robust transparent check — handles both Chrome ("rgba(0, 0, 0, 0)")
 	// and Firefox ("rgba(0,0,0,0)" / "transparent") output formats.
 	function bgAlpha(colorStr) {
@@ -203,6 +230,7 @@
 			if (!playlist) return toast("No playlist found", true);
 
 			const popover = await openBell();
+			await expandPopover(popover);
 			const allAlbums = readNotificationAlbums(popover);
 			closeBell();
 			if (!allAlbums.length) return toast("No new release notifications visible");
@@ -252,6 +280,7 @@
 
 	async function debugMarkUnread() {
 		const popover = await openBell();
+		await expandPopover(popover);
 		const n = markUnreadItems(popover);
 		toast(`Detected ${n} unread item(s) (pink ring)`, n === 0);
 	}
