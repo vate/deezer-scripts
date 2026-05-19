@@ -1,8 +1,14 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
-// @namespace    https://www.deezer.com/
-// @version      1.1.0
-// @description  Adds a button next to the bell that pushes unread (pink-dot) new-release notifications' tracks into a chosen playlist (defaults to the first one in the sidebar; override via Tampermonkey menu).
+// @namespace    https://github.com/vate/deezer-scripts
+// @version      1.2.0
+// @description  Adds a button next to the bell that pushes unread (theme-accent dot) new-release notifications' tracks into a chosen playlist (defaults to the first one in the sidebar; override via Tampermonkey menu).
+// @author       Andrés Ortiz Massó
+// @license      GPL-3.0
+// @homepageURL  https://github.com/vate/deezer-scripts
+// @supportURL   https://github.com/vate/deezer-scripts/issues
+// @downloadURL  https://raw.githubusercontent.com/vate/deezer-scripts/main/notifications-to-playlist/deezer-scripts-notifications-to-playlist.user.js
+// @updateURL    https://raw.githubusercontent.com/vate/deezer-scripts/main/notifications-to-playlist/deezer-scripts-notifications-to-playlist.user.js
 // @match        https://www.deezer.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=deezer.com
 // @run-at       document-idle
@@ -153,8 +159,10 @@
 		return parts.length === 4 ? parts[3] : 1;
 	}
 
-	// An item is "unread" if its `.heading-4` carries the pink `::before` dot
-	// (a non-transparent background on the pseudo-element).
+	// An item is "unread" if its `.heading-4` carries the theme-accent `::before`
+	// dot (a non-transparent background on the pseudo-element). The color varies
+	// per Deezer theme (historically pink, now configurable — blue/red/etc.),
+	// so we test for "any opaque background", not a specific RGB.
 	function isUnreadItem(item) {
 		const h = item.querySelector(".heading-4");
 		if (!h) return false;
@@ -163,7 +171,8 @@
 		return bgAlpha(cs.backgroundColor) > 0;
 	}
 
-	// Visual debug marker: paint a pink ring on every item the script thinks is unread.
+	// Visual debug marker: paint a high-contrast ring on every item the script
+	// thinks is unread. Magenta works against any current Deezer theme accent.
 	function markUnreadItems(popover) {
 		if (!popover) return 0;
 		let count = 0;
@@ -171,7 +180,7 @@
 			item.style.outline = "";
 			item.style.outlineOffset = "";
 			if (isUnreadItem(item)) {
-				item.style.outline = "2px solid rgb(243, 131, 251)";
+				item.style.outline = "2px solid magenta";
 				item.style.outlineOffset = "-2px";
 				count++;
 			}
@@ -282,7 +291,7 @@
 		const popover = await openBell();
 		await expandPopover(popover);
 		const n = markUnreadItems(popover);
-		toast(`Detected ${n} unread item(s) (pink ring)`, n === 0);
+		toast(`Detected ${n} unread item(s) (color ring)`, n === 0);
 	}
 
 	function makePillButton(id, label, title, bg, onClick) {
