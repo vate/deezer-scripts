@@ -1,6 +1,6 @@
 # Deezer: Notifications to Playlist
 
-A userscript that adds a **`+ Playlist`** button next to the Deezer notifications bell. Clicking it scans your unread "new release" notifications (the ones with the pink dot) and appends every track from those albums to a playlist of your choice.
+A userscript that adds a **`+ Playlist`** button next to the Deezer notifications bell. Clicking it scans your unread "new release" notifications (the ones marked with the theme-accent dot — pink, blue, or whichever color your active Deezer theme uses) and appends every track from those albums to a playlist of your choice.
 
 ## Install
 
@@ -21,7 +21,7 @@ Open [deezer.com](https://www.deezer.com/) while logged in. Two pill buttons app
 | Button | What it does |
 | --- | --- |
 | **`+ Playlist`** | Opens the notifications popover, picks unread new-release entries, reads each album's tracks, and appends them to the target playlist. Albums it has already added are skipped automatically. |
-| **`🔍 Unread`** | Diagnostic only — outlines in pink every notification the script considers unread. No API calls, no changes. Use this if Deezer's DOM changes and detection seems off. |
+| **`🔍 Unread`** | Diagnostic only — outlines in magenta every notification the script considers unread. No API calls, no changes. Use this if Deezer's DOM changes and detection seems off. |
 
 A toast in the bottom-right reports the result: `Added N track(s) from X/Y album(s) to "<playlist name>"`.
 
@@ -44,7 +44,7 @@ Other tunables (edit the `CONFIG` object at the top of the script):
 
 ## How "unread" is detected
 
-Deezer marks unread notifications with a pink dot rendered as a `::before` pseudo-element on the `.heading-4` title. The script reads the computed style of that pseudo and treats the item as unread when the pseudo's `background-color` is opaque. The **`🔍 Unread`** button is the visual probe — if it shows zero hits when you can clearly see unread notifications, Deezer has likely changed the DOM and the detector needs updating.
+Deezer marks unread notifications with a small theme-accent dot rendered as a `::before` pseudo-element on the `.heading-4` title. The exact color depends on your active Deezer theme (it used to be pink; modern themes use blue, red, etc.), so the script just checks for an opaque `::before` background rather than matching a specific RGB. The **`🔍 Unread`** button is the visual probe — if it shows zero hits when you can clearly see unread notifications, Deezer has likely changed the DOM and the detector needs updating.
 
 ## Permissions (`@grant`)
 
