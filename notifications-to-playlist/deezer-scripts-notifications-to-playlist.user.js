@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  Adds a button next to the bell that pushes unread (theme-accent dot) new-release notifications' tracks into a chosen playlist (defaults to the first one in the sidebar; override via Tampermonkey menu).
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -24,7 +24,8 @@
 	const CONFIG = {
 		playlistId: null, // null = first sidebar playlist
 		releaseTypeRegex: /NEW (SINGLE|ALBUM|EP|MIXTAPE|RELEASE)/i,
-		bellOpenTimeoutMs: 2000,
+		bellOpenTimeoutMs: 3500,
+		bellStableMs: 400,
 		expandTimeoutMs: 5000,
 	};
 
@@ -106,15 +107,38 @@
 
 	const getBell = () => document.querySelector('button[aria-label="Notifications"]');
 	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+	// Deezer renders cached notification items into the popover immediately,
+	// then swaps them for fresh data ~500–800ms later. Wait for the rendered
+	// set (count + first item's title) to stay unchanged for `bellStableMs`
+	// before returning — otherwise we read the stale cache and miss the
+	// freshly-arrived unread items.
 	async function openBell() {
 		const bell = getBell();
 		if (!bell) return null;
 		if (bell.getAttribute("aria-expanded") !== "true") bell.click();
 		const controlsId = bell.getAttribute("aria-controls");
+		const fingerprint = (el) => {
+			const items = el?.querySelectorAll(".notifications-item-container");
+			if (!items?.length) return "";
+			const first = items[0].querySelector(".heading-4")?.textContent?.trim() || "";
+			return `${items.length}::${first}`;
+		};
 		const deadline = Date.now() + cfg("bellOpenTimeoutMs");
+		const stableMs = cfg("bellStableMs");
+		let lastFp = "";
+		let stableSince = 0;
 		while (Date.now() < deadline) {
 			const el = controlsId ? document.getElementById(controlsId) : null;
-			if (el?.querySelector(".notifications-item-container")) return el;
+			const fp = fingerprint(el);
+			if (fp) {
+				if (fp === lastFp) {
+					if (!stableSince) stableSince = Date.now();
+					if (Date.now() - stableSince >= stableMs) return el;
+				} else {
+					lastFp = fp;
+					stableSince = 0;
+				}
+			}
 			await sleep(50);
 		}
 		return controlsId ? document.getElementById(controlsId) : null;
