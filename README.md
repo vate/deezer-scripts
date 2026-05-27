@@ -7,6 +7,7 @@ A small collection of userscripts for [deezer.com](https://www.deezer.com/), to 
 | Script | Description |
 | --- | --- |
 | [`notifications-to-playlist`](./notifications-to-playlist/) | Adds a `+ Playlist` button next to the notifications bell that pushes unread new-release notifications' tracks into a chosen playlist. |
+| [`bulk-remove`](./bulk-remove/) | Adds a hover pill on playlist rows that removes the hovered track plus every track above it in one call. |
 
 Each script has its own README with install link, configuration, and permissions notes.
 
