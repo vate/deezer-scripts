@@ -47,15 +47,11 @@
 	}
 
 	const GW = "/ajax/gw-light.php";
-	// Deezer GW quirks learned the hard way:
-	// - playlist.getSongs returns an empty list (no error) when called without a
-	//   valid api_token. Always fetch the token via deezer.getUserData first.
-	// - playlist.deleteSongs rejects with "Invalid CSRF token" unless the request
-	//   also carries a `cid` query param (random per call) AND an `x-deezer-user`
-	//   header set to USER.USER_ID from deezer.getUserData. Body keys are
-	//   lowercase (playlist_id, songs, ctxt) and song IDs must be numbers, not
-	//   strings — playlist.addSongs is more forgiving and accepts uppercase keys
-	//   + string IDs, so don't copy that shape blindly.
+	// Deezer GW quirks: playlist.getSongs silently returns [] without an api_token;
+	// playlist.deleteSongs rejects as "Invalid CSRF token" unless the request adds
+	// a per-call `cid` query param AND an `x-deezer-user` header (USER.USER_ID),
+	// uses lowercase body keys (playlist_id, songs, ctxt), and numeric song IDs.
+	// playlist.addSongs is laxer — don't copy that shape blindly.
 	const newCid = () => String(Math.floor(Math.random() * 1e9));
 
 	async function gwCall(method, body, apiToken = "", userId = "") {
@@ -72,19 +68,18 @@
 	}
 	async function getAllPlaylistSongs(playlistId, apiToken, userId) {
 		const all = [];
-		const pageSize = cfg("fetchPageSize");
 		let start = 0;
 		let total = Infinity;
 		while (start < total) {
 			const j = await gwCall(
 				"playlist.getSongs",
-				{ playlist_id: String(playlistId), nb: pageSize, start },
+				{ playlist_id: String(playlistId), nb: cfg("fetchPageSize"), start },
 				apiToken,
 				userId,
 			);
 			const data = j?.results?.data || [];
-			total = j?.results?.total ?? data.length;
 			if (!data.length) break;
+			total = j?.results?.total ?? data.length;
 			all.push(...data);
 			start += data.length;
 		}
@@ -103,13 +98,8 @@
 		);
 	}
 
-	function currentPlaylistId() {
-		const m = location.pathname.match(PLAYLIST_RE);
-		return m ? m[1] : null;
-	}
-	function playlistName() {
-		return document.querySelector("h1")?.textContent?.trim() || "this playlist";
-	}
+	const currentPlaylistId = () => location.pathname.match(PLAYLIST_RE)?.[1] || null;
+	const playlistName = () => document.querySelector("h1")?.textContent?.trim() || "this playlist";
 
 	function rowIdentity(row) {
 		if (!row) return null;
@@ -209,7 +199,6 @@
 		const ident = rowIdentity(row);
 		if (!ident) return toast("Could not read track info from row", true);
 
-		const originalLabel = pillBtn.textContent;
 		pillBtn.disabled = true;
 		pillBtn.textContent = "…working";
 
@@ -225,17 +214,14 @@
 
 			const toRemove = songs.slice(0, idx + 1);
 			const n = toRemove.length;
-			const threshold = Number(cfg("confirmThreshold")) || 0;
-			if (n > threshold) {
+			if (n > Number(cfg("confirmThreshold") || 0)) {
 				const ok = confirm(`Remove ${n} track(s) (this one and everything above) from "${playlistName()}"?`);
 				if (!ok) return;
 			}
 
-			const trackIds = toRemove.map((s) => s.SNG_ID);
-			const r = await deletePlaylistSongs(playlistId, trackIds, apiToken, userId);
-			if (r?.error && Object.keys(r.error).length) {
-				toast(`Delete failed: ${JSON.stringify(r.error).slice(0, 200)}`, true);
-				return;
+			const r = await deletePlaylistSongs(playlistId, toRemove.map((s) => s.SNG_ID), apiToken, userId);
+			if (Object.keys(r?.error || {}).length) {
+				return toast(`Delete failed: ${JSON.stringify(r.error).slice(0, 200)}`, true);
 			}
 			toast(`Removed ${n} track(s) from "${playlistName()}" — reloading`);
 			setTimeout(() => location.reload(), 800);
@@ -243,16 +229,14 @@
 			console.error("[dz-bulk-remove]", e);
 			toast("Error: " + (e?.message || e), true);
 		} finally {
-			if (pillBtn) {
-				pillBtn.disabled = false;
-				pillBtn.textContent = originalLabel;
-			}
+			pillBtn.disabled = false;
+			pillBtn.textContent = "↥ Remove this & above";
 		}
 	}
 
+	// Hide the pill on scroll/route changes so it doesn't float over the wrong row.
 	document.addEventListener("mouseover", onRowMouseEnter, true);
 	document.addEventListener("mousemove", onMouseMove, true);
-	// Hide the pill on scroll/route changes so it doesn't float over the wrong row.
 	window.addEventListener("scroll", () => !pinned && hidePill(), true);
 	window.addEventListener("popstate", () => hidePill());
 })();
