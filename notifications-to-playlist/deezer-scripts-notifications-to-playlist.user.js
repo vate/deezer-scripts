@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.2.1
-// @description  Adds a button next to the bell that pushes unread (theme-accent dot) new-release notifications' tracks into a chosen playlist (defaults to the first one in the sidebar; override via Tampermonkey menu).
+// @version      1.3.0
+// @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
 // @homepageURL  https://github.com/vate/deezer-scripts
@@ -21,9 +21,16 @@
 	"use strict";
 
 	// ---- CONFIG ---------------------------------------------------------------
+	const TIME_RANGES = {
+		today: { label: "Today", maxAgeMs: 24 * 3600e3 },
+		week: { label: "This week", maxAgeMs: 7 * 24 * 3600e3 },
+		fortnight: { label: "Last 2 weeks", maxAgeMs: 14 * 24 * 3600e3 },
+		month: { label: "Last month", maxAgeMs: 30 * 24 * 3600e3 },
+	};
 	const CONFIG = {
 		playlistId: null, // null = first sidebar playlist
 		releaseTypeRegex: /NEW (SINGLE|ALBUM|EP|MIXTAPE|RELEASE)/i,
+		rangeKey: "week", // one of Object.keys(TIME_RANGES)
 		bellOpenTimeoutMs: 3500,
 		bellStableMs: 400,
 		expandTimeoutMs: 5000,
@@ -173,37 +180,48 @@
 		}
 		scroller.scrollTop = 0;
 	}
-	// Robust transparent check — handles both Chrome ("rgba(0, 0, 0, 0)")
-	// and Firefox ("rgba(0,0,0,0)" / "transparent") output formats.
-	function bgAlpha(colorStr) {
-		if (!colorStr || colorStr === "transparent") return 0;
-		const m = colorStr.match(/rgba?\(([^)]+)\)/);
-		if (!m) return 1;
-		const parts = m[1].split(",").map((s) => parseFloat(s));
-		return parts.length === 4 ? parts[3] : 1;
+	// Parse Deezer's relative notification date ("6 HOURS AGO", "1 WEEK AGO", etc.)
+	// into milliseconds. Returns null if the format doesn't match.
+	const UNIT_MS = {
+		MINUTE: 60e3,
+		HOUR: 3600e3,
+		DAY: 86400e3,
+		WEEK: 7 * 86400e3,
+		MONTH: 30 * 86400e3,
+		YEAR: 365 * 86400e3,
+	};
+	function parseRelativeAgeMs(s) {
+		const m = s?.match(/(\d+)\s+(MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?\s+AGO/i);
+		if (!m) return null;
+		const unit = UNIT_MS[m[2].toUpperCase()];
+		return unit ? parseInt(m[1], 10) * unit : null;
 	}
 
-	// An item is "unread" if its `.heading-4` carries the theme-accent `::before`
-	// dot (a non-transparent background on the pseudo-element). The color varies
-	// per Deezer theme (historically pink, now configurable — blue/red/etc.),
-	// so we test for "any opaque background", not a specific RGB.
-	function isUnreadItem(item) {
-		const h = item.querySelector(".heading-4");
-		if (!h) return false;
-		const cs = window.getComputedStyle(h, "::before");
-		if (cs.content === "none" || cs.content === "normal") return false;
-		return bgAlpha(cs.backgroundColor) > 0;
+	function currentRange() {
+		const key = cfg("rangeKey");
+		return TIME_RANGES[key] || TIME_RANGES.week;
+	}
+
+	// An item is "in range" if its date matches the configured release-type regex
+	// AND its parsed age is within the currently selected time range.
+	function isInRange(item) {
+		const re = cfg("releaseTypeRegex");
+		const date = item.querySelector(".notifications-item-date")?.textContent || "";
+		if (!re.test(date)) return false;
+		const age = parseRelativeAgeMs(date);
+		if (age === null) return false;
+		return age <= currentRange().maxAgeMs;
 	}
 
 	// Visual debug marker: paint a high-contrast ring on every item the script
-	// thinks is unread. Magenta works against any current Deezer theme accent.
-	function markUnreadItems(popover) {
+	// would currently pick. Magenta stands out against any Deezer theme.
+	function markMatchingItems(popover) {
 		if (!popover) return 0;
 		let count = 0;
 		popover.querySelectorAll(".notifications-item-container").forEach((item) => {
 			item.style.outline = "";
 			item.style.outlineOffset = "";
-			if (isUnreadItem(item)) {
+			if (isInRange(item)) {
 				item.style.outline = "2px solid magenta";
 				item.style.outlineOffset = "-2px";
 				count++;
@@ -214,13 +232,10 @@
 
 	function readNotificationAlbums(popover) {
 		if (!popover) return [];
-		const re = cfg("releaseTypeRegex");
 		const seen = new Set();
 		const out = [];
 		popover.querySelectorAll(".notifications-item-container").forEach((item) => {
-			if (!isUnreadItem(item)) return;
-			const date = item.querySelector(".notifications-item-date")?.textContent || "";
-			if (!re.test(date)) return;
+			if (!isInRange(item)) return;
 			const link = item.querySelector(".notifications-item-media-title a, .heading-4 a");
 			const m = link?.pathname?.match(/\/album\/(\d+)/);
 			if (!m || seen.has(m[1])) return;
@@ -266,12 +281,13 @@
 			await expandPopover(popover);
 			const allAlbums = readNotificationAlbums(popover);
 			closeBell();
-			if (!allAlbums.length) return toast("No new release notifications visible");
+			const rangeLabel = currentRange().label;
+			if (!allAlbums.length) return toast(`No new-release notifications in range "${rangeLabel}"`);
 
 			const processed = loadProcessed();
 			const albums = allAlbums.filter((a) => !processed.has(processedKey(playlist.id, a.id)));
 			const skipped = allAlbums.length - albums.length;
-			if (!albums.length) return toast(`All ${skipped} album(s) already added to "${playlist.name}"`);
+			if (!albums.length) return toast(`All ${skipped} album(s) in "${rangeLabel}" already added to "${playlist.name}"`);
 
 			const apiToken = await getApiToken();
 			if (!apiToken) return toast("Could not fetch Deezer API token", true);
@@ -300,7 +316,7 @@
 			}
 			saveProcessed(processed);
 			toast(
-				`Added ${trackTotal} track(s) from ${albumOk}/${albums.length} album(s) to "${playlist.name}"${albumFailed ? ` — ${albumFailed} failed` : ""}${skipped ? ` — ${skipped} skipped (already added)` : ""}`,
+				`Added ${trackTotal} track(s) from ${albumOk}/${albums.length} album(s) (${rangeLabel}) to "${playlist.name}"${albumFailed ? ` — ${albumFailed} failed` : ""}${skipped ? ` — ${skipped} skipped (already added)` : ""}`,
 				albumFailed > 0 && albumOk === 0,
 			);
 		} catch (e) {
@@ -311,11 +327,12 @@
 		}
 	}
 
-	async function debugMarkUnread() {
+	async function debugMarkMatches() {
 		const popover = await openBell();
 		await expandPopover(popover);
-		const n = markUnreadItems(popover);
-		toast(`Detected ${n} unread item(s) (color ring)`, n === 0);
+		const n = markMatchingItems(popover);
+		const label = currentRange().label;
+		toast(`Matched ${n} item(s) in "${label}" (magenta ring)`, n === 0);
 	}
 
 	function makePillButton(id, label, title, bg, onClick) {
@@ -329,20 +346,46 @@
 		return btn;
 	}
 
+	function makeRangeSelect() {
+		const sel = document.createElement("select");
+		sel.id = BTN_ID + "-range";
+		sel.title = "Time range for the + Playlist / 🔍 Preview buttons";
+		sel.style.cssText = `margin-right:8px;padding:6px 10px;background:#333;color:#fff;border:0;border-radius:999px;font:600 12px/1 system-ui,sans-serif;cursor:pointer`;
+		for (const [key, { label }] of Object.entries(TIME_RANGES)) {
+			const opt = document.createElement("option");
+			opt.value = key;
+			opt.textContent = label;
+			sel.appendChild(opt);
+		}
+		const stored = gmGet("rangeKey", undefined);
+		sel.value = stored && TIME_RANGES[stored] ? stored : CONFIG.rangeKey;
+		sel.addEventListener("change", () => gmSet("rangeKey", sel.value));
+		return sel;
+	}
+
 	function injectButton() {
 		const bell = getBell();
 		if (!bell?.parentElement) return;
+		if (!document.getElementById(BTN_ID + "-range")) {
+			bell.parentElement.insertBefore(makeRangeSelect(), bell);
+		}
 		if (!document.getElementById(BTN_ID)) {
-			const btn = makePillButton(BTN_ID, "+ Playlist", "Add tracks from unread new-release notifications", "#a238ff", run);
+			const btn = makePillButton(
+				BTN_ID,
+				"+ Playlist",
+				"Add tracks from new-release notifications within the selected time range",
+				"#a238ff",
+				run,
+			);
 			bell.parentElement.insertBefore(btn, bell);
 		}
 		if (!document.getElementById(BTN_ID + "-debug")) {
 			const dbg = makePillButton(
 				BTN_ID + "-debug",
-				"🔍 Unread",
-				"Show which items the script considers unread (no changes)",
+				"🔍 Preview",
+				"Show which items the script will add for the selected range (no changes)",
 				"#444",
-				debugMarkUnread,
+				debugMarkMatches,
 			);
 			bell.parentElement.insertBefore(dbg, bell);
 		}
