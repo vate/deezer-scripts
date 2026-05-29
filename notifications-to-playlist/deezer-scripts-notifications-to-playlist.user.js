@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.3.0
+// @version      1.3.2
 // @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -182,7 +182,14 @@
 	}
 	// Parse Deezer's relative notification date ("6 HOURS AGO", "1 WEEK AGO", etc.)
 	// into milliseconds. Returns null if the format doesn't match.
+	//
+	// Deezer formats SINGULAR recent times with an article rather than a digit
+	// ("AN HOUR AGO", "A MINUTE AGO", "A DAY AGO") and very-recent ones with no
+	// unit at all ("JUST NOW", "A FEW SECONDS AGO"). We must treat "A"/"AN" as 1
+	// and the seconds-bucket as ~0, or those items get dropped — which is why
+	// the freshest notifications (~1 hour old) were never being added.
 	const UNIT_MS = {
+		SECOND: 1e3,
 		MINUTE: 60e3,
 		HOUR: 3600e3,
 		DAY: 86400e3,
@@ -191,10 +198,16 @@
 		YEAR: 365 * 86400e3,
 	};
 	function parseRelativeAgeMs(s) {
-		const m = s?.match(/(\d+)\s+(MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?\s+AGO/i);
+		if (!s) return null;
+		const text = s.toUpperCase();
+		// "just now", "moments ago", "a few seconds ago" → essentially zero age.
+		if (/\b(JUST NOW|A? ?MOMENTS? AGO|A FEW SECONDS AGO)\b/.test(text)) return 0;
+		// Quantity is either a digit or an article ("A" / "AN" → 1).
+		const m = text.match(/(\d+|AN?)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?\s+AGO/);
 		if (!m) return null;
-		const unit = UNIT_MS[m[2].toUpperCase()];
-		return unit ? parseInt(m[1], 10) * unit : null;
+		const qty = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : 1;
+		const unit = UNIT_MS[m[2]];
+		return unit ? qty * unit : null;
 	}
 
 	function currentRange() {
@@ -211,23 +224,6 @@
 		const age = parseRelativeAgeMs(date);
 		if (age === null) return false;
 		return age <= currentRange().maxAgeMs;
-	}
-
-	// Visual debug marker: paint a high-contrast ring on every item the script
-	// would currently pick. Magenta stands out against any Deezer theme.
-	function markMatchingItems(popover) {
-		if (!popover) return 0;
-		let count = 0;
-		popover.querySelectorAll(".notifications-item-container").forEach((item) => {
-			item.style.outline = "";
-			item.style.outlineOffset = "";
-			if (isInRange(item)) {
-				item.style.outline = "2px solid magenta";
-				item.style.outlineOffset = "-2px";
-				count++;
-			}
-		});
-		return count;
 	}
 
 	function readNotificationAlbums(popover) {
@@ -327,14 +323,6 @@
 		}
 	}
 
-	async function debugMarkMatches() {
-		const popover = await openBell();
-		await expandPopover(popover);
-		const n = markMatchingItems(popover);
-		const label = currentRange().label;
-		toast(`Matched ${n} item(s) in "${label}" (magenta ring)`, n === 0);
-	}
-
 	function makePillButton(id, label, title, bg, onClick) {
 		const btn = document.createElement("button");
 		btn.id = id;
@@ -349,7 +337,7 @@
 	function makeRangeSelect() {
 		const sel = document.createElement("select");
 		sel.id = BTN_ID + "-range";
-		sel.title = "Time range for the + Playlist / 🔍 Preview buttons";
+		sel.title = "Time range for the + Playlist button";
 		sel.style.cssText = `margin-right:8px;padding:6px 10px;background:#333;color:#fff;border:0;border-radius:999px;font:600 12px/1 system-ui,sans-serif;cursor:pointer`;
 		for (const [key, { label }] of Object.entries(TIME_RANGES)) {
 			const opt = document.createElement("option");
@@ -378,16 +366,6 @@
 				run,
 			);
 			bell.parentElement.insertBefore(btn, bell);
-		}
-		if (!document.getElementById(BTN_ID + "-debug")) {
-			const dbg = makePillButton(
-				BTN_ID + "-debug",
-				"🔍 Preview",
-				"Show which items the script will add for the selected range (no changes)",
-				"#444",
-				debugMarkMatches,
-			);
-			bell.parentElement.insertBefore(dbg, bell);
 		}
 	}
 
