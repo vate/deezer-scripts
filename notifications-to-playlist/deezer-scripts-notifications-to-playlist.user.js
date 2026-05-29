@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.3.0
+// @version      1.3.1
 // @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -182,7 +182,14 @@
 	}
 	// Parse Deezer's relative notification date ("6 HOURS AGO", "1 WEEK AGO", etc.)
 	// into milliseconds. Returns null if the format doesn't match.
+	//
+	// Deezer formats SINGULAR recent times with an article rather than a digit
+	// ("AN HOUR AGO", "A MINUTE AGO", "A DAY AGO") and very-recent ones with no
+	// unit at all ("JUST NOW", "A FEW SECONDS AGO"). We must treat "A"/"AN" as 1
+	// and the seconds-bucket as ~0, or those items get dropped — which is why
+	// the freshest notifications (~1 hour old) were never being added.
 	const UNIT_MS = {
+		SECOND: 1e3,
 		MINUTE: 60e3,
 		HOUR: 3600e3,
 		DAY: 86400e3,
@@ -191,10 +198,16 @@
 		YEAR: 365 * 86400e3,
 	};
 	function parseRelativeAgeMs(s) {
-		const m = s?.match(/(\d+)\s+(MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?\s+AGO/i);
+		if (!s) return null;
+		const text = s.toUpperCase();
+		// "just now", "moments ago", "a few seconds ago" → essentially zero age.
+		if (/\b(JUST NOW|A? ?MOMENTS? AGO|A FEW SECONDS AGO)\b/.test(text)) return 0;
+		// Quantity is either a digit or an article ("A" / "AN" → 1).
+		const m = text.match(/(\d+|AN?)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?\s+AGO/);
 		if (!m) return null;
-		const unit = UNIT_MS[m[2].toUpperCase()];
-		return unit ? parseInt(m[1], 10) * unit : null;
+		const qty = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : 1;
+		const unit = UNIT_MS[m[2]];
+		return unit ? qty * unit : null;
 	}
 
 	function currentRange() {
