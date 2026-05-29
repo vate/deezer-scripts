@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -226,23 +226,6 @@
 		return age <= currentRange().maxAgeMs;
 	}
 
-	// Visual debug marker: paint a high-contrast ring on every item the script
-	// would currently pick. Magenta stands out against any Deezer theme.
-	function markMatchingItems(popover) {
-		if (!popover) return 0;
-		let count = 0;
-		popover.querySelectorAll(".notifications-item-container").forEach((item) => {
-			item.style.outline = "";
-			item.style.outlineOffset = "";
-			if (isInRange(item)) {
-				item.style.outline = "2px solid magenta";
-				item.style.outlineOffset = "-2px";
-				count++;
-			}
-		});
-		return count;
-	}
-
 	function readNotificationAlbums(popover) {
 		if (!popover) return [];
 		const seen = new Set();
@@ -340,14 +323,6 @@
 		}
 	}
 
-	async function debugMarkMatches() {
-		const popover = await openBell();
-		await expandPopover(popover);
-		const n = markMatchingItems(popover);
-		const label = currentRange().label;
-		toast(`Matched ${n} item(s) in "${label}" (magenta ring)`, n === 0);
-	}
-
 	function makePillButton(id, label, title, bg, onClick) {
 		const btn = document.createElement("button");
 		btn.id = id;
@@ -362,7 +337,7 @@
 	function makeRangeSelect() {
 		const sel = document.createElement("select");
 		sel.id = BTN_ID + "-range";
-		sel.title = "Time range for the + Playlist / 🔍 Preview buttons";
+		sel.title = "Time range for the + Playlist button";
 		sel.style.cssText = `margin-right:8px;padding:6px 10px;background:#333;color:#fff;border:0;border-radius:999px;font:600 12px/1 system-ui,sans-serif;cursor:pointer`;
 		for (const [key, { label }] of Object.entries(TIME_RANGES)) {
 			const opt = document.createElement("option");
@@ -391,16 +366,6 @@
 				run,
 			);
 			bell.parentElement.insertBefore(btn, bell);
-		}
-		if (!document.getElementById(BTN_ID + "-debug")) {
-			const dbg = makePillButton(
-				BTN_ID + "-debug",
-				"🔍 Preview",
-				"Show which items the script will add for the selected range (no changes)",
-				"#444",
-				debugMarkMatches,
-			);
-			bell.parentElement.insertBefore(dbg, bell);
 		}
 	}
 
