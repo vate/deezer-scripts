@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.3.2
-// @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Override the playlist via the Tampermonkey menu.
+// @version      2.0.0
+// @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Reads the notification feed directly from Deezer's API (no popover scraping). Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
 // @homepageURL  https://github.com/vate/deezer-scripts
@@ -31,9 +31,7 @@
 		playlistId: null, // null = first sidebar playlist
 		releaseTypeRegex: /NEW (SINGLE|ALBUM|EP|MIXTAPE|RELEASE)/i,
 		rangeKey: "week", // one of Object.keys(TIME_RANGES)
-		bellOpenTimeoutMs: 3500,
-		bellStableMs: 400,
-		expandTimeoutMs: 5000,
+		notificationFetchCount: 40, // how many notifications to request from notification.list
 	};
 
 	const gmGet = typeof GM_getValue === "function" ? GM_getValue : () => undefined;
@@ -71,9 +69,16 @@
 		if (!res.ok) throw new Error(`GW ${method} HTTP ${res.status}`);
 		return res.json();
 	}
-	async function getApiToken() {
+	async function getUserData() {
 		const data = await gwCall("deezer.getUserData", {});
-		return data?.results?.checkForm;
+		return { apiToken: data?.results?.checkForm, userId: data?.results?.USER?.USER_ID };
+	}
+	// Fetch the raw notification feed (new releases, social, etc.) straight from
+	// Deezer's GW API. This is a fresh server call every time — no DOM, no cached
+	// in-memory store, no read-state — so the newest release is always present.
+	async function fetchNotifications(apiToken, userId) {
+		const res = await gwCall("notification.list", { USER_ID: userId, NB: cfg("notificationFetchCount") }, apiToken);
+		return res?.results?.data || [];
 	}
 	async function getAlbumTracks(albumId) {
 		const ids = [];
@@ -113,131 +118,34 @@
 	}
 
 	const getBell = () => document.querySelector('button[aria-label="Notifications"]');
-	const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-	// Deezer renders cached notification items into the popover immediately,
-	// then swaps them for fresh data ~500–800ms later. Wait for the rendered
-	// set (count + first item's title) to stay unchanged for `bellStableMs`
-	// before returning — otherwise we read the stale cache and miss the
-	// freshly-arrived unread items.
-	async function openBell() {
-		const bell = getBell();
-		if (!bell) return null;
-		if (bell.getAttribute("aria-expanded") !== "true") bell.click();
-		const controlsId = bell.getAttribute("aria-controls");
-		const fingerprint = (el) => {
-			const items = el?.querySelectorAll(".notifications-item-container");
-			if (!items?.length) return "";
-			const first = items[0].querySelector(".heading-4")?.textContent?.trim() || "";
-			return `${items.length}::${first}`;
-		};
-		const deadline = Date.now() + cfg("bellOpenTimeoutMs");
-		const stableMs = cfg("bellStableMs");
-		let lastFp = "";
-		let stableSince = 0;
-		while (Date.now() < deadline) {
-			const el = controlsId ? document.getElementById(controlsId) : null;
-			const fp = fingerprint(el);
-			if (fp) {
-				if (fp === lastFp) {
-					if (!stableSince) stableSince = Date.now();
-					if (Date.now() - stableSince >= stableMs) return el;
-				} else {
-					lastFp = fp;
-					stableSince = 0;
-				}
-			}
-			await sleep(50);
-		}
-		return controlsId ? document.getElementById(controlsId) : null;
-	}
-	function closeBell() {
-		const bell = getBell();
-		if (bell?.getAttribute("aria-expanded") === "true") bell.click();
-	}
-
-	// Deezer virtualizes the notifications list: items only enter the DOM as
-	// the popover is scrolled. Force-render every notification by scrolling to
-	// the bottom until the rendered count and scrollHeight stop growing.
-	async function expandPopover(popover) {
-		if (!popover) return;
-		const scroller =
-			[popover, ...popover.querySelectorAll("*")].find((el) => {
-				const cs = el && window.getComputedStyle(el);
-				return cs && /(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
-			}) || popover;
-
-		let lastCount = -1;
-		let lastHeight = -1;
-		const deadline = Date.now() + cfg("expandTimeoutMs");
-		while (Date.now() < deadline) {
-			scroller.scrollTop = scroller.scrollHeight;
-			await sleep(150);
-			const count = popover.querySelectorAll(".notifications-item-container").length;
-			const height = scroller.scrollHeight;
-			if (count === lastCount && height === lastHeight) break;
-			lastCount = count;
-			lastHeight = height;
-		}
-		scroller.scrollTop = 0;
-	}
-	// Parse Deezer's relative notification date ("6 HOURS AGO", "1 WEEK AGO", etc.)
-	// into milliseconds. Returns null if the format doesn't match.
-	//
-	// Deezer formats SINGULAR recent times with an article rather than a digit
-	// ("AN HOUR AGO", "A MINUTE AGO", "A DAY AGO") and very-recent ones with no
-	// unit at all ("JUST NOW", "A FEW SECONDS AGO"). We must treat "A"/"AN" as 1
-	// and the seconds-bucket as ~0, or those items get dropped — which is why
-	// the freshest notifications (~1 hour old) were never being added.
-	const UNIT_MS = {
-		SECOND: 1e3,
-		MINUTE: 60e3,
-		HOUR: 3600e3,
-		DAY: 86400e3,
-		WEEK: 7 * 86400e3,
-		MONTH: 30 * 86400e3,
-		YEAR: 365 * 86400e3,
-	};
-	function parseRelativeAgeMs(s) {
-		if (!s) return null;
-		const text = s.toUpperCase();
-		// "just now", "moments ago", "a few seconds ago" → essentially zero age.
-		if (/\b(JUST NOW|A? ?MOMENTS? AGO|A FEW SECONDS AGO)\b/.test(text)) return 0;
-		// Quantity is either a digit or an article ("A" / "AN" → 1).
-		const m = text.match(/(\d+|AN?)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|YEAR)S?\s+AGO/);
-		if (!m) return null;
-		const qty = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : 1;
-		const unit = UNIT_MS[m[2]];
-		return unit ? qty * unit : null;
-	}
 
 	function currentRange() {
 		const key = cfg("rangeKey");
 		return TIME_RANGES[key] || TIME_RANGES.week;
 	}
 
-	// An item is "in range" if its date matches the configured release-type regex
-	// AND its parsed age is within the currently selected time range.
-	function isInRange(item) {
+	// Build the de-duplicated list of in-range new-release albums from a raw
+	// `notification.list` payload. Each notification carries an exact ISO `date`
+	// (so no relative-time parsing) and a `footer` like "1 HOUR AGO - NEW SINGLE"
+	// matched against the configured release-type regex. We keep only the ones
+	// that point at an album.
+	function readReleaseAlbums(notifications) {
 		const re = cfg("releaseTypeRegex");
-		const date = item.querySelector(".notifications-item-date")?.textContent || "";
-		if (!re.test(date)) return false;
-		const age = parseRelativeAgeMs(date);
-		if (age === null) return false;
-		return age <= currentRange().maxAgeMs;
-	}
-
-	function readNotificationAlbums(popover) {
-		if (!popover) return [];
+		const maxAgeMs = currentRange().maxAgeMs;
+		const now = Date.now();
 		const seen = new Set();
 		const out = [];
-		popover.querySelectorAll(".notifications-item-container").forEach((item) => {
-			if (!isInRange(item)) return;
-			const link = item.querySelector(".notifications-item-media-title a, .heading-4 a");
-			const m = link?.pathname?.match(/\/album\/(\d+)/);
-			if (!m || seen.has(m[1])) return;
-			seen.add(m[1]);
-			out.push({ id: m[1], title: (link.textContent || "").trim() });
-		});
+		for (const n of notifications) {
+			if (n?.picture?.media_type !== "album") continue;
+			if (!re.test(n.footer || "")) continue;
+			const t = Date.parse(n.date);
+			if (Number.isNaN(t)) continue;
+			if (now - t > maxAgeMs) continue; // future dates (clock skew, age < 0) stay in range
+			const id = String(n.picture.media_id || (n.url || "").match(/\/album\/(\d+)/)?.[1] || "");
+			if (!id || seen.has(id)) continue;
+			seen.add(id);
+			out.push({ id, title: n.title || "" });
+		}
 		return out;
 	}
 
@@ -273,10 +181,11 @@
 			const playlist = resolvePlaylist();
 			if (!playlist) return toast("No playlist found", true);
 
-			const popover = await openBell();
-			await expandPopover(popover);
-			const allAlbums = readNotificationAlbums(popover);
-			closeBell();
+			const { apiToken, userId } = await getUserData();
+			if (!apiToken || !userId) return toast("Could not fetch Deezer API token", true);
+
+			const notifications = await fetchNotifications(apiToken, userId);
+			const allAlbums = readReleaseAlbums(notifications);
 			const rangeLabel = currentRange().label;
 			if (!allAlbums.length) return toast(`No new-release notifications in range "${rangeLabel}"`);
 
@@ -284,9 +193,6 @@
 			const albums = allAlbums.filter((a) => !processed.has(processedKey(playlist.id, a.id)));
 			const skipped = allAlbums.length - albums.length;
 			if (!albums.length) return toast(`All ${skipped} album(s) in "${rangeLabel}" already added to "${playlist.name}"`);
-
-			const apiToken = await getApiToken();
-			if (!apiToken) return toast("Could not fetch Deezer API token", true);
 
 			let trackTotal = 0,
 				albumOk = 0,
