@@ -8,6 +8,7 @@ A small collection of userscripts for [deezer.com](https://www.deezer.com/), to 
 | --- | --- |
 | [`notifications-to-playlist`](./notifications-to-playlist/) | Adds a `+ Playlist` button next to the notifications bell that pushes unread new-release notifications' tracks into a chosen playlist. |
 | [`bulk-remove`](./bulk-remove/) | Adds a hover pill on playlist rows that removes the hovered track plus every track above it in one call. |
+| [`zoom-cover`](./zoom-cover/) | Makes the album cover clickable — click it to open the full-size image in a lightbox (the ⋯ menu's "Zoom on the Cover", one click away). |
 
 Each script has its own README with install link, configuration, and permissions notes.
 
