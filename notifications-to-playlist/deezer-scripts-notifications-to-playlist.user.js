@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      2.0.0
+// @version      2.0.1
 // @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Reads the notification feed directly from Deezer's API (no popover scraping). Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -34,26 +34,20 @@
 		notificationFetchCount: 40, // how many notifications to request from notification.list
 	};
 
-	const gmGet = typeof GM_getValue === "function" ? GM_getValue : () => undefined;
-	const gmSet = typeof GM_setValue === "function" ? GM_setValue : () => {};
 	function cfg(key) {
-		const stored = gmGet(key, undefined);
+		const stored = GM_getValue(key, undefined);
 		return stored !== undefined && stored !== "" ? stored : CONFIG[key];
 	}
 
-	if (typeof GM_registerMenuCommand === "function") {
-		GM_registerMenuCommand("Set playlist ID…", () => {
-			const current = cfg("playlistId") ?? "";
-			const v = prompt("Playlist ID (blank = first sidebar playlist):", current);
-			if (v === null) return;
-			gmSet("playlistId", v.trim() === "" ? "" : Number(v.trim()));
-		});
-		GM_registerMenuCommand("Reset to first playlist", () => gmSet("playlistId", ""));
-		GM_registerMenuCommand("Clear processed albums (allow re-adding)", () => {
-			gmSet("processedKeys", "");
-			toast("Processed album history cleared");
-		});
-	}
+	GM_registerMenuCommand("Set playlist ID…", () => {
+		const v = prompt("Playlist ID (blank = first sidebar playlist):", cfg("playlistId") ?? "");
+		if (v !== null) GM_setValue("playlistId", v.trim());
+	});
+	GM_registerMenuCommand("Reset to first playlist", () => GM_setValue("playlistId", ""));
+	GM_registerMenuCommand("Clear processed albums (allow re-adding)", () => {
+		GM_setValue("processedKeys", "");
+		toast("Processed album history cleared");
+	});
 
 	const GW = "/ajax/gw-light.php";
 	const BTN_ID = "dz-notif-to-playlist-btn";
@@ -82,14 +76,11 @@
 	}
 	async function getAlbumTracks(albumId) {
 		const ids = [];
-		let url = `https://api.deezer.com/album/${albumId}`;
-		let firstPage = true;
+		let url = `https://api.deezer.com/album/${albumId}/tracks`;
 		while (url) {
 			const r = await fetch(url);
 			if (!r.ok) throw new Error(`album ${albumId} HTTP ${r.status}`);
-			const j = await r.json();
-			const page = firstPage ? j?.tracks : j;
-			firstPage = false;
+			const page = await r.json();
 			(page?.data || []).forEach((t) => ids.push(String(t.id)));
 			url = page?.next || null;
 		}
@@ -119,10 +110,8 @@
 
 	const getBell = () => document.querySelector('button[aria-label="Notifications"]');
 
-	function currentRange() {
-		const key = cfg("rangeKey");
-		return TIME_RANGES[key] || TIME_RANGES.week;
-	}
+	const rangeKey = () => (TIME_RANGES[cfg("rangeKey")] ? cfg("rangeKey") : CONFIG.rangeKey);
+	const currentRange = () => TIME_RANGES[rangeKey()];
 
 	// Build the de-duplicated list of in-range new-release albums from a raw
 	// `notification.list` payload. Each notification carries an exact ISO `date`
@@ -140,7 +129,8 @@
 			if (!re.test(n.footer || "")) continue;
 			const t = Date.parse(n.date);
 			if (Number.isNaN(t)) continue;
-			if (now - t > maxAgeMs) continue; // future dates (clock skew, age < 0) stay in range
+			// No lower bound: future dates (clock skew) stay in range.
+			if (now - t > maxAgeMs) continue;
 			const id = String(n.picture.media_id || (n.url || "").match(/\/album\/(\d+)/)?.[1] || "");
 			if (!id || seen.has(id)) continue;
 			seen.add(id);
@@ -164,7 +154,7 @@
 	};
 
 	function loadProcessed() {
-		const raw = gmGet("processedKeys", "");
+		const raw = GM_getValue("processedKeys", "");
 		if (!raw) return new Set();
 		try {
 			return new Set(JSON.parse(raw));
@@ -172,8 +162,21 @@
 			return new Set();
 		}
 	}
-	const saveProcessed = (set) => gmSet("processedKeys", JSON.stringify([...set]));
+	const saveProcessed = (set) => GM_setValue("processedKeys", JSON.stringify([...set]));
 	const processedKey = (playlistId, albumId) => `${playlistId}:${albumId}`;
+
+	// Returns the number of tracks added, or 0 on any failure.
+	async function addAlbum(playlistId, albumId, apiToken) {
+		try {
+			const ids = await getAlbumTracks(albumId);
+			if (!ids.length) return 0;
+			const r = await addSongsToPlaylist(playlistId, ids, apiToken);
+			return r?.error && Object.keys(r.error).length ? 0 : ids.length;
+		} catch (e) {
+			console.warn("[dz-notif-to-playlist] album", albumId, e);
+			return 0;
+		}
+	}
 
 	async function run(btn) {
 		setBtnState(btn, "…working", true);
@@ -194,28 +197,16 @@
 			const skipped = allAlbums.length - albums.length;
 			if (!albums.length) return toast(`All ${skipped} album(s) in "${rangeLabel}" already added to "${playlist.name}"`);
 
-			let trackTotal = 0,
-				albumOk = 0,
-				albumFailed = 0;
+			let trackTotal = 0;
+			let albumOk = 0;
 			for (const a of albums) {
-				try {
-					const ids = await getAlbumTracks(a.id);
-					if (!ids.length) {
-						albumFailed++;
-						continue;
-					}
-					const r = await addSongsToPlaylist(playlist.id, ids, apiToken);
-					if (r?.error && Object.keys(r.error).length) {
-						albumFailed++;
-						continue;
-					}
-					trackTotal += ids.length;
-					albumOk++;
-					processed.add(processedKey(playlist.id, a.id));
-				} catch {
-					albumFailed++;
-				}
+				const added = await addAlbum(playlist.id, a.id, apiToken);
+				if (!added) continue;
+				trackTotal += added;
+				albumOk++;
+				processed.add(processedKey(playlist.id, a.id));
 			}
+			const albumFailed = albums.length - albumOk;
 			saveProcessed(processed);
 			toast(
 				`Added ${trackTotal} track(s) from ${albumOk}/${albums.length} album(s) (${rangeLabel}) to "${playlist.name}"${albumFailed ? ` — ${albumFailed} failed` : ""}${skipped ? ` — ${skipped} skipped (already added)` : ""}`,
@@ -229,14 +220,14 @@
 		}
 	}
 
-	function makePillButton(id, label, title, bg, onClick) {
+	function makeButton() {
 		const btn = document.createElement("button");
-		btn.id = id;
+		btn.id = BTN_ID;
 		btn.type = "button";
-		btn.textContent = label;
-		btn.title = title;
-		btn.style.cssText = `margin-right:8px;padding:6px 12px;background:${bg};color:#fff;border:0;border-radius:999px;font:600 12px/1 system-ui,sans-serif;cursor:pointer`;
-		btn.addEventListener("click", () => onClick(btn));
+		btn.textContent = "+ Playlist";
+		btn.title = "Add tracks from new-release notifications within the selected time range";
+		btn.style.cssText = `margin-right:8px;padding:6px 12px;background:#a238ff;color:#fff;border:0;border-radius:999px;font:600 12px/1 system-ui,sans-serif;cursor:pointer`;
+		btn.addEventListener("click", () => run(btn));
 		return btn;
 	}
 
@@ -251,9 +242,8 @@
 			opt.textContent = label;
 			sel.appendChild(opt);
 		}
-		const stored = gmGet("rangeKey", undefined);
-		sel.value = stored && TIME_RANGES[stored] ? stored : CONFIG.rangeKey;
-		sel.addEventListener("change", () => gmSet("rangeKey", sel.value));
+		sel.value = rangeKey();
+		sel.addEventListener("change", () => GM_setValue("rangeKey", sel.value));
 		return sel;
 	}
 
@@ -264,14 +254,7 @@
 			bell.parentElement.insertBefore(makeRangeSelect(), bell);
 		}
 		if (!document.getElementById(BTN_ID)) {
-			const btn = makePillButton(
-				BTN_ID,
-				"+ Playlist",
-				"Add tracks from new-release notifications within the selected time range",
-				"#a238ff",
-				run,
-			);
-			bell.parentElement.insertBefore(btn, bell);
+			bell.parentElement.insertBefore(makeButton(), bell);
 		}
 	}
 
