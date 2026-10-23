@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Deezer: Zoom Cover on Click
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.0.0
-// @description  Click an album cover to open it full-size in a lightbox — the same "Zoom on the Cover" the ⋯ menu offers, but one click away.
+// @version      1.1.0
+// @description  Click an album cover or artist photo to open it full-size in a lightbox — the same "Zoom on the Cover" the ⋯ menu offers, but one click away.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
 // @homepageURL  https://github.com/vate/deezer-scripts
@@ -18,19 +18,20 @@
 (function () {
 	"use strict";
 
-	// The album masthead cover lives in [data-testid="album-cover"]; its <img>
-	// src looks like .../images/cover/<hash>/500x500-000000-80-0-0.jpg. Swapping
-	// the WxH token for a large size makes the CDN serve the highest resolution it
-	// has (it caps to the source, so over-asking is safe).
-	const COVER_SEL = '[data-testid="album-cover"]';
+	// The album and artist mastheads live in [data-testid="album-cover"] and
+	// [data-testid="artist-cover"]; their <img> src looks like
+	// .../images/(cover|artist)/<hash>/500x500-000000-80-0-0.jpg. Swapping the WxH
+	// token for a large size makes the CDN serve the highest resolution it has
+	// (it caps to the source, so over-asking is safe).
+	const COVER_SEL = '[data-testid="album-cover"],[data-testid="artist-cover"]';
+	const IMAGE_RE = /images\/(cover|artist)\//;
 	const SIZE_RE = /\/\d+x\d+-/;
 	const ZOOM_SIZE = "1500x1500";
 	const OVERLAY_ID = "dz-zoom-cover-overlay";
 
 	function highResUrl(img) {
 		const src = img?.currentSrc || img?.src || "";
-		if (!/images\/cover\//.test(src)) return src;
-		return SIZE_RE.test(src) ? src.replace(SIZE_RE, `/${ZOOM_SIZE}-`) : src;
+		return IMAGE_RE.test(src) ? src.replace(SIZE_RE, `/${ZOOM_SIZE}-`) : src;
 	}
 
 	function closeOverlay() {
@@ -45,7 +46,7 @@
 		}
 	}
 
-	function openOverlay(url) {
+	function openOverlay(url, alt) {
 		closeOverlay();
 
 		const overlay = document.createElement("div");
@@ -56,7 +57,7 @@
 
 		const img = document.createElement("img");
 		img.src = url;
-		img.alt = "Album cover";
+		img.alt = alt;
 		img.style.cssText =
 			"max-width:90vw;max-height:90vh;box-shadow:0 8px 40px rgba(0,0,0,.6);border-radius:6px;" +
 			"object-fit:contain";
@@ -79,7 +80,7 @@
 			// Don't let the cover's own click handler (play / nothing) also fire.
 			e.preventDefault();
 			e.stopPropagation();
-			openOverlay(url);
+			openOverlay(url, img.alt);
 		},
 		true,
 	);

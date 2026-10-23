@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Bulk Remove Above
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.0.3
+// @version      1.0.4
 // @description  Adds a hover button on playlist rows that removes the hovered track plus every track above it.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -101,26 +101,29 @@
 	const currentPlaylistId = () => location.pathname.match(PLAYLIST_RE)?.[1] || null;
 	const playlistName = () => document.querySelector("h1")?.textContent?.trim() || "this playlist";
 
+	// NFC + collapsed whitespace absorbs stray NBSPs, double spaces and
+	// composed/decomposed accents between the DOM text and the API strings.
+	const norm = (s) => (s || "").normalize("NFC").replace(/\s+/g, " ").trim();
+
 	function rowIdentity(row) {
 		if (!row) return null;
-		const title = row.querySelector('[data-testid="title"]')?.textContent?.trim() || "";
+		const title = norm(row.querySelector('[data-testid="title"]')?.textContent);
 		const album = row.querySelector('a[data-testid="album"]')?.getAttribute("href") || "";
 		const albumId = album.match(/\/album\/(\d+)/)?.[1] || "";
 		if (!title || !albumId) return null;
 		return { title, albumId };
 	}
-	// The DOM shows `SNG_TITLE + " " + VERSION` (e.g. "Ball and Chain (Live at ...)"),
-	// so matching SNG_TITLE alone misses any track with a version suffix. Also
-	// collapse whitespace to absorb stray NBSPs and double spaces between the two.
-	const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
-	const songFullTitle = (s) => norm(s.VERSION ? `${s.SNG_TITLE} ${s.VERSION}` : s.SNG_TITLE);
+
 	function findSongIndex(songs, ident) {
-		// Match on (full title + album). Title alone collides on covers/reissues;
-		// adding album disambiguates. Artist ID isn't a reliable extra filter: the
-		// DOM's first artist link can be a featured artist on a collab while ART_ID
-		// is the album's primary artist.
-		const target = norm(ident.title);
-		return songs.findIndex((s) => String(s.ALB_ID) === ident.albumId && songFullTitle(s) === target);
+		// Match on (title + album). Title alone collides on covers/reissues; adding
+		// album disambiguates. Artist ID isn't a reliable extra filter: the DOM's
+		// first artist link can be a featured artist on a collab while ART_ID is the
+		// album's primary artist.
+		// The DOM shows `SNG_TITLE + " " + VERSION` (e.g. "Ball and Chain (Live at ...)");
+		// fall back to bare SNG_TITLE for views that omit the version.
+		const sameAlbum = (s) => String(s.ALB_ID) === ident.albumId;
+		const full = songs.findIndex((s) => sameAlbum(s) && norm(`${s.SNG_TITLE} ${s.VERSION || ""}`) === ident.title);
+		return full >= 0 ? full : songs.findIndex((s) => sameAlbum(s) && norm(s.SNG_TITLE) === ident.title);
 	}
 
 	// ---- UI -------------------------------------------------------------------
