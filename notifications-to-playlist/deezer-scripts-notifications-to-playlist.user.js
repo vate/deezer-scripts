@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      2.0.1
+// @version      2.0.2
 // @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Reads the notification feed directly from Deezer's API (no popover scraping). Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -29,7 +29,7 @@
 	};
 	const CONFIG = {
 		playlistId: null, // null = first sidebar playlist
-		releaseTypeRegex: /NEW (SINGLE|ALBUM|EP|MIXTAPE|RELEASE)/i,
+		releaseNotificationType: 2, // `type` of new-release notifications; the footer text is localized so it can't be matched
 		rangeKey: "week", // one of Object.keys(TIME_RANGES)
 		notificationFetchCount: 40, // how many notifications to request from notification.list
 	};
@@ -108,25 +108,26 @@
 		return m ? { id: m[1], name: (link.textContent || "").trim() } : null;
 	}
 
-	const getBell = () => document.querySelector('button[aria-label="Notifications"]');
+	// aria-label is localized; the bell is the only topbar popover button without a data-testid (the other is the profile menu).
+	const getBell = () => document.querySelector('button.topbar-action[aria-haspopup="dialog"]:not([data-testid])');
 
 	const rangeKey = () => (TIME_RANGES[cfg("rangeKey")] ? cfg("rangeKey") : CONFIG.rangeKey);
 	const currentRange = () => TIME_RANGES[rangeKey()];
 
 	// Build the de-duplicated list of in-range new-release albums from a raw
 	// `notification.list` payload. Each notification carries an exact ISO `date`
-	// (so no relative-time parsing) and a `footer` like "1 HOUR AGO - NEW SINGLE"
-	// matched against the configured release-type regex. We keep only the ones
-	// that point at an album.
+	// (so no relative-time parsing) and a numeric `type`; release notifications
+	// are type 2 pointing at an album. The `footer` text is localized, so it is
+	// never inspected.
 	function readReleaseAlbums(notifications) {
-		const re = cfg("releaseTypeRegex");
+		const releaseType = cfg("releaseNotificationType");
 		const maxAgeMs = currentRange().maxAgeMs;
 		const now = Date.now();
 		const seen = new Set();
 		const out = [];
 		for (const n of notifications) {
 			if (n?.picture?.media_type !== "album") continue;
-			if (!re.test(n.footer || "")) continue;
+			if (n.type !== releaseType) continue;
 			const t = Date.parse(n.date);
 			if (Number.isNaN(t)) continue;
 			// No lower bound: future dates (clock skew) stay in range.
