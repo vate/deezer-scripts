@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Bulk Remove Above
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      1.0.4
+// @version      1.0.7
 // @description  Adds a hover button on playlist rows that removes the hovered track plus every track above it.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -183,6 +183,7 @@
 
 	function onRowMouseEnter(e) {
 		if (!currentPlaylistId()) return;
+		applyHidden();
 		const row = e.target.closest('[role="row"][aria-rowindex]');
 		if (!row) return;
 		// Skip the header row (no title cell).
@@ -199,6 +200,39 @@
 		const overRow = hoveredRow && hoveredRow.contains(e.target);
 		const overPill = pillBtn.contains(e.target);
 		if (!overRow && !overPill) hidePill();
+	}
+
+	/**
+	 * Deezer keeps the playlist in memory and its grid is virtualized, so removed
+	 * tracks can't be dropped from React's state. Instead we remember the highest
+	 * (stale) aria-rowindex removed and re-hide on every render we can observe.
+	 * Scenario "second removal without reload": the DOM keeps the original
+	 * aria-rowindex values, so this is tracked by DOM index, not by the fresh API
+	 * count.
+	 */
+	const hidden = { playlistId: null, upTo: 0, rowHeight: 0 };
+
+	function applyHidden() {
+		if (!hidden.upTo || hidden.playlistId !== currentPlaylistId()) return;
+		const rows = [...(document.querySelector('[role="grid"]')?.querySelectorAll('[role="row"][aria-rowindex]') || [])].filter((r) =>
+			r.querySelector('[data-testid="title"]'),
+		);
+		// display:none rows measure 0, so measure a visible one and cache it.
+		const measured = rows.find((r) => r.offsetHeight)?.offsetHeight;
+		if (measured) hidden.rowHeight = measured;
+		rows.forEach((r) => {
+			// Rows below the cut slide up to close the gap left by the hidden ones.
+			if (Number(r.getAttribute("aria-rowindex")) <= hidden.upTo) r.style.display = "none";
+			else r.style.transform = `translateY(-${hidden.upTo * hidden.rowHeight}px)`;
+		});
+	}
+
+	function hideRowsUpTo(row, playlistId) {
+		const idx = Number(row.getAttribute("aria-rowindex")) || 0;
+		hidden.upTo = hidden.playlistId === playlistId ? Math.max(hidden.upTo, idx) : idx;
+		hidden.playlistId = playlistId;
+		applyHidden();
+		if (pillBtn) pillBtn.style.display = "none";
 	}
 
 	async function onPillClick() {
@@ -232,8 +266,8 @@
 			if (Object.keys(r?.error || {}).length) {
 				return toast(`Delete failed: ${JSON.stringify(r.error).slice(0, 200)}`, true);
 			}
-			toast(`Removed ${n} track(s) from "${playlistName()}" — reloading`);
-			setTimeout(() => location.reload(), 800);
+			hideRowsUpTo(row, playlistId);
+			toast(`Removed ${n} track(s) from "${playlistName()}"`);
 		} catch (e) {
 			console.error("[dz-bulk-remove]", e);
 			toast("Error: " + (e?.message || e), true);
@@ -246,6 +280,13 @@
 	// Hide the pill on scroll/route changes so it doesn't float over the wrong row.
 	document.addEventListener("mouseover", onRowMouseEnter, true);
 	document.addEventListener("mousemove", onMouseMove, true);
-	window.addEventListener("scroll", () => !pinned && hidePill(), true);
+	window.addEventListener(
+		"scroll",
+		() => {
+			applyHidden();
+			if (!pinned) hidePill();
+		},
+		true,
+	);
 	window.addEventListener("popstate", () => hidePill());
 })();
