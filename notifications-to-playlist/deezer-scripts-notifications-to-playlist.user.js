@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Deezer: Notifications to Playlist
 // @namespace    https://github.com/vate/deezer-scripts
-// @version      2.0.2
+// @version      2.1.0
 // @description  Adds a time-range dropdown + button next to the bell that pushes new-release notifications' tracks (within Today / This week / Last 2 weeks / Last month) into a chosen playlist. Reads the notification feed directly from Deezer's API (no popover scraping). Override the playlist via the Tampermonkey menu.
 // @author       Andrés Ortiz Massó
 // @license      GPL-3.0
@@ -86,6 +86,11 @@
 		}
 		return ids;
 	}
+	// Same call Deezer's own UI makes when a notification is opened; clears the red dot.
+	async function markNotificationsRead(notifIds, apiToken) {
+		if (!notifIds.length) return;
+		await gwCall("notification.markAsRead", { notif_ids: notifIds }, apiToken);
+	}
 	async function addSongsToPlaylist(playlistId, trackIds, apiToken) {
 		return gwCall(
 			"playlist.addSongs",
@@ -133,9 +138,15 @@
 			// No lower bound: future dates (clock skew) stay in range.
 			if (now - t > maxAgeMs) continue;
 			const id = String(n.picture.media_id || (n.url || "").match(/\/album\/(\d+)/)?.[1] || "");
-			if (!id || seen.has(id)) continue;
+			if (!id) continue;
+			// Same album can appear in several notifications; keep every unread id so all red dots get cleared.
+			const unreadId = n.read === false && n.id ? String(n.id) : null;
+			if (seen.has(id)) {
+				if (unreadId) out.find((a) => a.id === id).unreadNotifIds.push(unreadId);
+				continue;
+			}
 			seen.add(id);
-			out.push({ id, title: n.title || "" });
+			out.push({ id, title: n.title || "", unreadNotifIds: unreadId ? [unreadId] : [] });
 		}
 		return out;
 	}
@@ -200,15 +211,22 @@
 
 			let trackTotal = 0;
 			let albumOk = 0;
+			const notifIdsToMark = [];
 			for (const a of albums) {
 				const added = await addAlbum(playlist.id, a.id, apiToken);
 				if (!added) continue;
 				trackTotal += added;
 				albumOk++;
 				processed.add(processedKey(playlist.id, a.id));
+				notifIdsToMark.push(...a.unreadNotifIds);
 			}
 			const albumFailed = albums.length - albumOk;
 			saveProcessed(processed);
+			try {
+				await markNotificationsRead(notifIdsToMark, apiToken);
+			} catch (e) {
+				console.warn("[dz-notif-to-playlist] markAsRead", e);
+			}
 			toast(
 				`Added ${trackTotal} track(s) from ${albumOk}/${albums.length} album(s) (${rangeLabel}) to "${playlist.name}"${albumFailed ? ` — ${albumFailed} failed` : ""}${skipped ? ` — ${skipped} skipped (already added)` : ""}`,
 				albumFailed > 0 && albumOk === 0,
